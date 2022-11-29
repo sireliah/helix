@@ -77,8 +77,6 @@ use serde::de::{self, Deserialize, Deserializer};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
-use itertools::FoldWhile::{Continue, Done};
-use itertools::Itertools;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub type OnKeyCallback = Box<dyn FnOnce(&mut Context, KeyEvent)>;
@@ -5553,30 +5551,19 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     // which would make the transaction to panic.
     // Conflicts are resolved by picking only the top change in such case.
     fn remove_conflicts(changes: Vec<Change>) -> Vec<Change> {
-        if changes.len() > 2 {
-            changes
-                .into_iter()
-                .fold_while(vec![], |mut acc: Vec<Change>, change| {
-                    if let Some(last_change) = acc.pop() {
-                        if last_change.0 >= change.0 || last_change.1 >= change.1 {
-                            acc.push(last_change);
-                            Done(acc)
-                        } else {
-                            acc.push(last_change);
-                            acc.push(change);
-                            Continue(acc)
-                        }
-                    } else {
-                        acc.push(change);
-                        Continue(acc)
-                    }
-                })
-                .into_inner()
-        } else {
-            changes
+        let mut new_changes: Vec<Change> = Vec::new();
+        for change in changes {
+            match new_changes.last() {
+                Some(last_change) if last_change.0 >= change.0 || last_change.1 >= change.1 => {
+                    return new_changes;
+                }
+                _ => new_changes.push(change.clone()),
+            }
         }
+
+        new_changes
     }
-    let flat: Vec<Change> = all_changes.into_iter().flatten().unique().collect();
+    let flat: Vec<Change> = all_changes.into_iter().flatten().collect();
     let filtered = remove_conflicts(flat);
 
     let new_selection = selection.clone().transform(|range| {
