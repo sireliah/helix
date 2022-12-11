@@ -5514,6 +5514,7 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     let selection = doc.selection(view.id);
     let text = doc.text();
     let slice = text.slice(..);
+    let mut last_step_changes: Vec<Change> = vec![];
     let all_changes = selection.into_iter().map(|range| {
         let (start, end) = range.line_range(slice);
         let line_start = text.line_to_char(start);
@@ -5526,25 +5527,58 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         };
 
         if next_line == start || next_line >= text.len_lines() {
-            vec![(line_start, line_end, Some(line.into()))]
+            let changes = vec![(line_start, line_end, Some(line.into()))];
+            last_step_changes = changes.clone();
+            changes
         } else {
             let next_line_start = text.line_to_char(next_line);
             let next_line_end = line_end_char_index(&slice, next_line);
 
             let next_line_text = text.slice(next_line_start..next_line_end).to_string();
 
-            match direction {
-                MoveSelection::Above => vec![
-                    (next_line_start, next_line_end, Some(line.into())),
-                    (line_start, line_end, Some(next_line_text.into())),
-                ],
+            let changes = match direction {
+                MoveSelection::Above => {
+                    let current = vec![
+                        (next_line_start, next_line_end, Some(line.into())),
+                        (line_start, line_end, Some(next_line_text.into())),
+                    ];
+                    log::info!("Last step changes: {:?}", last_step_changes);
+                    if last_step_changes.len() > 0 {
+                        evaluate_changes(last_step_changes.clone(), current.clone())
+                    } else {
+                        current
+                    }
+                }
                 MoveSelection::Below => vec![
                     (line_start, line_end, Some(next_line_text.into())),
                     (next_line_start, next_line_end, Some(line.into())),
                 ],
-            }
+            };
+            last_step_changes = changes.clone();
+            changes
         }
     });
+
+    fn evaluate_changes(
+        mut last_changes: Vec<Change>,
+        mut current_changes: Vec<Change>,
+    ) -> Vec<Change> {
+        log::info!("Last Changes: {:?}", last_changes);
+        log::info!("Current Changes: {:?}", current_changes);
+        let mut last = last_changes.pop().unwrap();
+        let first = last_changes.pop().unwrap();
+        let current_last = current_changes.pop().unwrap();
+        let current_first = current_changes.pop().unwrap();
+
+        if last.0 == current_first.0 {
+            log::info!("Some conflict");
+            last.0 = current_last.0;
+            last.1 = current_last.1;
+            vec![first, current_first, last]
+        } else {
+            vec![first, last, current_first, current_last]
+        }
+    }
 
     // Conflicts might arise when two cursors are pointing to adjacent lines.
     // The resulting change vector would contain two changes referring the same lines,
@@ -5563,7 +5597,11 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
 
         new_changes
     }
-    let flat: Vec<Change> = all_changes.into_iter().flatten().collect();
+    // let flat: Vec<Change> = all_changes.into_iter().flatten().collect();
+    let mut ch: Vec<Vec<Change>> = all_changes.into_iter().collect();
+
+    let flat = ch.pop().unwrap();
+    log::info!("All changes {:?}", flat);
     let filtered = remove_conflicts(flat);
 
     let new_selection = selection.clone().transform(|range| {
