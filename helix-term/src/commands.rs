@@ -5537,22 +5537,20 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
             let next_line_text = text.slice(next_line_start..next_line_end).to_string();
 
             let changes = match direction {
-                MoveSelection::Above => {
-                    let current = vec![
-                        (next_line_start, next_line_end, Some(line.into())),
-                        (line_start, line_end, Some(next_line_text.into())),
-                    ];
-                    log::info!("Last step changes: {:?}", last_step_changes);
-                    if last_step_changes.len() > 0 {
-                        evaluate_changes(last_step_changes.clone(), current.clone())
-                    } else {
-                        current
-                    }
-                }
+                MoveSelection::Above => vec![
+                    (next_line_start, next_line_end, Some(line.into())),
+                    (line_start, line_end, Some(next_line_text.into())),
+                ],
                 MoveSelection::Below => vec![
                     (line_start, line_end, Some(next_line_text.into())),
                     (next_line_start, next_line_end, Some(line.into())),
                 ],
+            };
+
+            let changes = if last_step_changes.len() > 1 {
+                evaluate_changes(last_step_changes.clone(), changes.clone(), &direction)
+            } else {
+                changes
             };
             last_step_changes = changes.clone();
             changes
@@ -5562,19 +5560,28 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     fn evaluate_changes(
         mut last_changes: Vec<Change>,
         mut current_changes: Vec<Change>,
+        direction: &MoveSelection,
     ) -> Vec<Change> {
         log::info!("Last Changes: {:?}", last_changes);
         log::info!("Current Changes: {:?}", current_changes);
         let mut last = last_changes.pop().unwrap();
         let first = last_changes.pop().unwrap();
         let current_last = current_changes.pop().unwrap();
-        let current_first = current_changes.pop().unwrap();
+        let mut current_first = current_changes.pop().unwrap();
 
         if last.0 == current_first.0 {
-            log::info!("Some conflict");
-            last.0 = current_last.0;
-            last.1 = current_last.1;
-            vec![first, current_first, last]
+            match direction {
+                MoveSelection::Above => {
+                    last.0 = current_last.0;
+                    last.1 = current_last.1;
+                    vec![first, current_first, last]
+                }
+                MoveSelection::Below => {
+                    current_first.0 = first.0;
+                    current_first.1 = first.1;
+                    vec![current_first, last, current_last]
+                }
+            }
         } else {
             vec![first, last, current_first, current_last]
         }
