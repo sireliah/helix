@@ -5473,7 +5473,6 @@ pub enum MoveSelection {
 /// to the text that have been moved.
 fn get_adjusted_selection_pos(
     doc: &Document,
-    // text: &Rope,
     range: Range,
     pos: usize,
     direction: &MoveSelection,
@@ -5481,6 +5480,8 @@ fn get_adjusted_selection_pos(
     let text = doc.text();
     let slice = text.slice(..);
     let (selection_start_line, selection_end_line) = range.line_range(slice);
+    // FIXME: this incorrectly assumes that the next line was not swapped in the evaluation step
+    // Make this change aware?
     let next_line = match direction {
         MoveSelection::Above => selection_start_line.saturating_sub(1),
         MoveSelection::Below => selection_end_line + 1,
@@ -5516,6 +5517,7 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     let slice = text.slice(..);
     let mut last_step_changes: Vec<Change> = vec![];
     let all_changes = selection.into_iter().map(|range| {
+        log::info!("Anchor: {}, Head: {}", range.anchor, range.head);
         let (start, end) = range.line_range(slice);
         let line_start = text.line_to_char(start);
         let line_end = line_end_char_index(&slice, end);
@@ -5562,8 +5564,9 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         mut current_changes: Vec<Change>,
         direction: &MoveSelection,
     ) -> Vec<Change> {
-        log::info!("Last Changes: {:?}", last_changes);
-        log::info!("Current Changes: {:?}", current_changes);
+        // log::info!("Last Changes: {:?}", last_changes);
+        // log::info!("Current Changes: {:?}", current_changes);
+        // TODO
         let mut last = last_changes.pop().unwrap();
         let first = last_changes.pop().unwrap();
         let current_last = current_changes.pop().unwrap();
@@ -5604,20 +5607,23 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
 
         new_changes
     }
-    // let flat: Vec<Change> = all_changes.into_iter().flatten().collect();
     let mut ch: Vec<Vec<Change>> = all_changes.into_iter().collect();
 
+    // TODO
     let flat = ch.pop().unwrap();
     log::info!("All changes {:?}", flat);
+
+    // TODO: test and remove
     let filtered = remove_conflicts(flat);
+    let transaction = Transaction::change(doc.text(), filtered.into_iter());
 
     let new_selection = selection.clone().transform(|range| {
+        log::info!("Selection range: {:?}", range);
         let anchor_pos = get_adjusted_selection_pos(doc, range, range.anchor, &direction);
         let head_pos = get_adjusted_selection_pos(doc, range, range.head, &direction);
 
         Range::new(anchor_pos, head_pos)
     });
-    let transaction = Transaction::change(doc.text(), filtered.into_iter());
 
     // Analogically to the conflicting line changes, selections can also panic
     // in case the ranges would overlap.
@@ -5629,7 +5635,7 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
             match last {
                 Some(last_r) => {
                     let last_line = last_r.cursor_line(slice);
-                    if range.overlaps(&last_r) || last_line + 1 == line || last_line == line {
+                    if range.overlaps(&last_r) || last_line == line {
                         return true;
                     } else {
                         last = Some(*range);
@@ -5640,7 +5646,9 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         }
         false
     };
+
     let cleaned_selection = if new_selection.len() > 1 && selections_collide() {
+        log::info!("Selection COLLIDE!");
         new_selection.into_single()
     } else {
         new_selection
