@@ -5559,16 +5559,16 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         }
     });
 
+    // FIXME: something is broken when moving +2 cursors
     fn evaluate_changes(
-        mut last_changes: Vec<Change>,
-        mut current_changes: Vec<Change>,
+        mut last_changes: Vec<ExtendedChange>,
+        mut current_changes: Vec<ExtendedChange>,
         direction: &MoveSelection,
-    ) -> Vec<Change> {
-        // log::info!("Last Changes: {:?}", last_changes);
-        // log::info!("Current Changes: {:?}", current_changes);
+    ) -> Vec<ExtendedChange> {
+        log::info!("Last Changes: {:?}", last_changes);
+        log::info!("Current Changes: {:?}", current_changes);
         // TODO
         let mut last = last_changes.pop().unwrap();
-        let first = last_changes.pop().unwrap();
         let current_last = current_changes.pop().unwrap();
         let mut current_first = current_changes.pop().unwrap();
 
@@ -5577,16 +5577,22 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
                 MoveSelection::Above => {
                     last.0 = current_last.0;
                     last.1 = current_last.1;
-                    vec![first, current_first, last]
+                    let first = last_changes.pop().unwrap();
+                    last_changes.extend(vec![first, current_first, last]);
+                    last_changes
                 }
                 MoveSelection::Below => {
-                    current_first.0 = first.0;
-                    current_first.1 = first.1;
-                    vec![current_first, last, current_last]
+                    current_first.0 = last_changes[0].0;
+                    current_first.1 = last_changes[0].1;
+                    last_changes[0] = current_first;
+                    last_changes.extend(vec![last, current_last]);
+                    last_changes
                 }
             }
         } else {
-            vec![first, last, current_first, current_last]
+            let first = last_changes.pop().unwrap();
+            last_changes.extend(vec![first, last, current_first, current_last]);
+            last_changes
         }
     }
 
