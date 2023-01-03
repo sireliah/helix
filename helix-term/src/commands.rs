@@ -5468,14 +5468,14 @@ pub enum MoveSelection {
     Above,
 }
 
-type ExtendedChange = (usize, usize, Option<Tendril>, Option<Range>);
+type ExtendedChange = (usize, usize, Option<Tendril>, Option<(usize, usize)>);
 
 /// Predict where selection cursor should be after moving the code block up or down.
 /// This function makes it look like the selection didn't change relative
 /// to the text that have been moved.
 fn get_adjusted_selection_pos(
     doc: &Document,
-    range: Range,
+    range: &Range,
     pos: usize,
     direction: &MoveSelection,
 ) -> usize {
@@ -5528,12 +5528,19 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
             MoveSelection::Below => end + 1,
         };
 
-        // FIXME: relative position goes out of sync
+        // // FIXME: relative position goes out of sync
+        // // because next line is different after swap
         let rel_pos_anchor = range.anchor - line_start;
         let rel_pos_head = range.head - line_start;
+        let cursor_rel_pos = (rel_pos_anchor, rel_pos_head);
+
         if next_line == start || next_line >= text.len_lines() {
-            let cursor = Range::new(line_start + rel_pos_anchor, line_start + rel_pos_head);
-            let changes = vec![(line_start, line_end, Some(line.into()), Some(cursor))];
+            let changes = vec![(
+                line_start,
+                line_end,
+                Some(line.into()),
+                Some(cursor_rel_pos),
+            )];
             last_step_changes = changes.clone();
             changes
         } else {
@@ -5541,18 +5548,13 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
             let next_line_end = line_end_char_index(&slice, next_line);
             let next_line_text = text.slice(next_line_start..next_line_end).to_string();
 
-            let cursor = Range::new(
-                next_line_start + rel_pos_anchor,
-                next_line_start + rel_pos_head,
-            );
-
             let changes = match direction {
                 MoveSelection::Above => vec![
                     (
                         next_line_start,
                         next_line_end,
                         Some(line.into()),
-                        Some(cursor),
+                        Some(cursor_rel_pos),
                     ),
                     (line_start, line_end, Some(next_line_text.into()), None),
                 ],
@@ -5562,7 +5564,7 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
                         next_line_start,
                         next_line_end,
                         Some(line.into()),
-                        Some(cursor),
+                        Some(cursor_rel_pos),
                     ),
                 ],
             };
@@ -5583,9 +5585,9 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         mut current_changes: Vec<ExtendedChange>,
         direction: &MoveSelection,
     ) -> Vec<ExtendedChange> {
-        // log::info!("Last Changes: {:?}", last_changes);
+        log::info!("Last Changes: {:?}", last_changes);
         // log::info!("Current Changes: {:?}", current_changes);
-        // TODO
+        // FIXME: fix cursors/selection position too
         let mut last = last_changes.pop().unwrap();
         let current_last = current_changes.pop().unwrap();
         let mut current_first = current_changes.pop().unwrap();
@@ -5628,7 +5630,6 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
                 _ => new_changes.push(change.clone()),
             }
         }
-
         new_changes
     }
 
@@ -5638,13 +5639,27 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     let (ch, sel): (Vec<Change>, Vec<Range>) = last_changes.into_iter().fold(
         (vec![], vec![]),
         |(mut acc_changes, mut acc_cursors), change| {
-            if let Some(cursor) = change.3 {
+            if let Some((rel_anchor, rel_head)) = change.3 {
+                // Place cursor in using the relative coordinates
+                // FIXME: mistake here!
+                // from should be the next line, not the current
+                let current_line_range = Range::new(change.0, change.1);
+                let (start, _) = current_line_range.line_range(slice);
+                let next_line_start = match direction {
+                    MoveSelection::Above => text.line_to_char(start.saturating_sub(1)),
+                    MoveSelection::Below => text.line_to_char(start + 1),
+                };
+
+                let anchor = next_line_start + rel_anchor;
+                let head = next_line_start + rel_head;
+
+                let cursor = Range::new(anchor, head);
                 if let Some(last) = acc_cursors.pop() {
-                    if !cursor.overlaps(&last) {
+                    if cursor.overlaps(&last) {
                         acc_cursors.push(last);
-                        acc_cursors.push(cursor);
                     } else {
                         acc_cursors.push(last);
+                        acc_cursors.push(cursor);
                     };
                 } else {
                     acc_cursors.push(cursor);
@@ -5668,42 +5683,42 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     // let filtered = remove_conflicts(flat);
     let transaction = Transaction::change(doc.text(), filtered.into_iter());
 
-    let new_selection = selection.clone().transform(|range| {
-        log::info!("Selection range: {:?}", range);
-        let anchor_pos = get_adjusted_selection_pos(doc, range, range.anchor, &direction);
-        let head_pos = get_adjusted_selection_pos(doc, range, range.head, &direction);
+    // let new_selection = selection.clone().transform(|range| {
+    //     log::info!("Selection range: {:?}", range);
+    //     let anchor_pos = get_adjusted_selection_pos(doc, range, range.anchor, &direction);
+    //     let head_pos = get_adjusted_selection_pos(doc, range, range.head, &direction);
 
-        Range::new(anchor_pos, head_pos)
-    });
+    //     Range::new(anchor_pos, head_pos)
+    // });
 
-    // Analogically to the conflicting line changes, selections can also panic
-    // in case the ranges would overlap.
-    // Only one selection is returned to prevent that.
-    let selections_collide = || -> bool {
-        let mut last: Option<Range> = None;
-        for range in new_selection.iter() {
-            let line = range.cursor_line(slice);
-            match last {
-                Some(last_r) => {
-                    let last_line = last_r.cursor_line(slice);
-                    if range.overlaps(&last_r) || last_line == line {
-                        return true;
-                    } else {
-                        last = Some(*range);
-                    };
-                }
-                None => last = Some(*range),
-            };
-        }
-        false
-    };
+    // // Analogically to the conflicting line changes, selections can also panic
+    // // in case the ranges would overlap.
+    // // Only one selection is returned to prevent that.
+    // let selections_collide = || -> bool {
+    //     let mut last: Option<Range> = None;
+    //     for range in new_selection.iter() {
+    //         let line = range.cursor_line(slice);
+    //         match last {
+    //             Some(last_r) => {
+    //                 let last_line = last_r.cursor_line(slice);
+    //                 if range.overlaps(&last_r) || last_line == line {
+    //                     return true;
+    //                 } else {
+    //                     last = Some(*range);
+    //                 };
+    //             }
+    //             None => last = Some(*range),
+    //         };
+    //     }
+    //     false
+    // };
 
-    let cleaned_selection = if new_selection.len() > 1 && selections_collide() {
-        log::info!("Selection COLLIDE!");
-        new_selection.into_single()
-    } else {
-        new_selection
-    };
+    // let cleaned_selection = if new_selection.len() > 1 && selections_collide() {
+    //     log::info!("Selection COLLIDE!");
+    //     new_selection.into_single()
+    // } else {
+    //     new_selection
+    // };
 
     apply_transaction(&transaction, doc, view);
     doc.set_selection(view.id, new_sel);
