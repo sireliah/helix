@@ -5586,8 +5586,6 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         direction: &MoveSelection,
     ) -> Vec<ExtendedChange> {
         log::info!("Last Changes: {:?}", last_changes);
-        // log::info!("Current Changes: {:?}", current_changes);
-        // FIXME: fix cursors/selection position too
         let mut last = last_changes.pop().unwrap();
         let current_last = current_changes.pop().unwrap();
         let mut current_first = current_changes.pop().unwrap();
@@ -5639,31 +5637,69 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     let (ch, sel): (Vec<Change>, Vec<Range>) = last_changes.into_iter().fold(
         (vec![], vec![]),
         |(mut acc_changes, mut acc_cursors), change| {
+            log::info!("Change: {:?}", change);
             if let Some((rel_anchor, rel_head)) = change.3 {
                 // Place cursor in using the relative coordinates
-                // FIXME: mistake here!
-                // from should be the next line, not the current
                 let current_line_range = Range::new(change.0, change.1);
-                let (start, _) = current_line_range.line_range(slice);
-                let next_line_start = match direction {
-                    MoveSelection::Above => text.line_to_char(start.saturating_sub(1)),
-                    MoveSelection::Below => text.line_to_char(start + 1),
-                };
+                let (start, end) = current_line_range.line_range(slice);
 
-                let anchor = next_line_start + rel_anchor;
-                let head = next_line_start + rel_head;
+                // // Fixme: this is NOT next line
+                // let (next_line_start, len) = match direction {
+                //     MoveSelection::Above => {
+                //         let next_line = start.saturating_sub(1);
+                //         let start = text.line_to_char(next_line);
+                //         let end = line_end_char_index(&slice, next_line);
+                //         (start, end.saturating_sub(start))
+                //     }
+                //     MoveSelection::Below => {
+                //         let next_line = start + 1;
+                //         let start = text.line_to_char(next_line);
+                //         let end = line_end_char_index(&slice, next_line);
+                //         (start, end.saturating_sub(start))
+                //     }
+                // };
 
-                let cursor = Range::new(anchor, head);
-                if let Some(last) = acc_cursors.pop() {
-                    if cursor.overlaps(&last) {
-                        acc_cursors.push(last);
+                let ch_len = change.2.as_ref().map_or(0, |x| x.len());
+                if let Some(last_change) = acc_changes.pop() {
+                    let last_change_len = last_change.2.as_ref().map_or(0, |x| x.len());
+                    log::info!(
+                        "Current line len: {}, next line len: {}, start line index: {}",
+                        ch_len,
+                        last_change_len,
+                        change.0
+                    );
+                    let anchor = change.0 + last_change_len + rel_anchor - ch_len;
+                    let head = change.0 + last_change_len + rel_head - ch_len;
+
+                    let cursor = Range::new(anchor, head);
+                    if let Some(last) = acc_cursors.pop() {
+                        if cursor.overlaps(&last) {
+                            acc_cursors.push(last);
+                        } else {
+                            acc_cursors.push(last);
+                            acc_cursors.push(cursor);
+                        };
                     } else {
-                        acc_cursors.push(last);
                         acc_cursors.push(cursor);
                     };
+
+                    acc_changes.push(last_change);
                 } else {
-                    acc_cursors.push(cursor);
-                };
+                    let anchor = change.0 + ch_len;
+                    let head = change.0 + ch_len;
+
+                    let cursor = Range::new(anchor, head);
+                    if let Some(last) = acc_cursors.pop() {
+                        if cursor.overlaps(&last) {
+                            acc_cursors.push(last);
+                        } else {
+                            acc_cursors.push(last);
+                            acc_cursors.push(cursor);
+                        };
+                    } else {
+                        acc_cursors.push(cursor);
+                    };
+                }
             };
             let ch: Change = (change.0, change.1, change.2.to_owned());
             acc_changes.push(ch);
