@@ -10,7 +10,6 @@ use tui::widgets::Row;
 pub use typed::*;
 
 use helix_core::{
-    Change,
     char_idx_at_visual_offset, comment,
     doc_formatter::TextFormat,
     encoding, find_first_non_whitespace_char, find_workspace, graphemes,
@@ -29,7 +28,7 @@ use helix_core::{
     textobject,
     tree_sitter::Node,
     unicode::width::UnicodeWidthChar,
-    visual_offset_from_block, Deletion, LineEnding, Position, Range, Rope, RopeGraphemes,
+    visual_offset_from_block, Change, Deletion, LineEnding, Position, Range, Rope, RopeGraphemes,
     RopeSlice, Selection, SmallVec, Tendril, Transaction,
 };
 use helix_view::{
@@ -5542,48 +5541,46 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         }
     });
 
-    /// This function merges changes from subsequent cursors
+    /// Merge changes from subsequent cursors
     fn evaluate_changes(
         mut last_changes: Vec<ExtendedChange>,
-        mut current_changes: Vec<ExtendedChange>,
+        current_changes: Vec<ExtendedChange>,
         direction: &MoveSelection,
     ) -> Vec<ExtendedChange> {
-        // let mut last_it = last_changes.into_iter();
-        // let mut current_it = current_changes.into_iter();
+        let mut current_it = current_changes.into_iter();
 
-
-        let mut last = last_changes.pop().unwrap();
-        let current_last = current_changes.pop().unwrap();
-        let mut current_first = current_changes.pop().unwrap();
-
-        if last.0 == current_first.0 {
-            match direction {
-                MoveSelection::Above => {
-                    let first = last_changes.pop().unwrap();
-                    last.0 = current_last.0;
-                    last.1 = current_last.1;
-                    last_changes.extend(vec![first, current_first, last]);
-                    last_changes
+        if let (Some(mut last), Some(mut current_first), Some(current_last)) =
+            (last_changes.pop(), current_it.next(), current_it.next())
+        {
+            if last.0 == current_first.0 {
+                match direction {
+                    MoveSelection::Above => {
+                        last.0 = current_last.0;
+                        last.1 = current_last.1;
+                        if let Some(first) = last_changes.pop() {
+                            last_changes.push(first)
+                        }
+                        last_changes.extend(vec![current_first, last.to_owned()]);
+                        last_changes
+                    }
+                    MoveSelection::Below => {
+                        current_first.0 = last_changes[0].0;
+                        current_first.1 = last_changes[0].1;
+                        last_changes[0] = current_first;
+                        last_changes.extend(vec![last.to_owned(), current_last]);
+                        last_changes
+                    }
                 }
-                MoveSelection::Below => {
-                    current_first.0 = last_changes[0].0;
-                    current_first.1 = last_changes[0].1;
-                    last_changes[0] = current_first;
-                    last_changes.extend(vec![last, current_last]);
-                    last_changes
+            } else {
+                if let Some(first) = last_changes.pop() {
+                    last_changes.push(first)
                 }
+                last_changes.extend(vec![last.to_owned(), current_first, current_last]);
+                last_changes
             }
         } else {
-            let first = last_changes.pop().unwrap();
-            last_changes.extend(vec![first, last, current_first, current_last]);
             last_changes
         }
-
-        // if let (Some(mut last), Some(first), Some(current_last), Some(mut current_first)) = (last_changes.pop(), last_changes.pop(), current_it.next(), current_it.next()) {
-        // } else {
-        //     last_changes
-        // }
-
     }
 
     let mut flattened: Vec<Vec<ExtendedChange>> = all_changes.into_iter().collect();
@@ -5596,9 +5593,6 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         .map(|change| (change.0, change.1, change.2.to_owned()))
         .collect();
 
-    log::info!("All changes {:?}", changes);
-    log::info!("All selections {:?}", acc_cursors);
-
     let new_sel = Selection::new(acc_cursors.into(), 0);
     let transaction = Transaction::change(doc.text(), changes.into_iter());
 
@@ -5606,6 +5600,9 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     doc.set_selection(view.id, new_sel);
 }
 
+/// Returns selection range that is valid for the updated document
+/// This logic is necessary because it's not possible to apply changes
+/// to the document first and then set selection.
 fn get_adjusted_selection(
     doc: &Document,
     last_changes: &Vec<ExtendedChange>,
@@ -5616,7 +5613,6 @@ fn get_adjusted_selection(
     let mut next_start = 0;
     let mut acc_cursors: Vec<Range> = vec![];
 
-    // TODO: when cursor is in the start or end, prevent further movement
     for change in last_changes.iter() {
         let change_len = change.2.as_ref().map_or(0, |x| x.len());
 
@@ -5650,7 +5646,6 @@ fn get_adjusted_selection(
             let cursor = Range::new(anchor, head);
             if let Some(last) = acc_cursors.pop() {
                 if cursor.overlaps(&last) {
-                    log::info!("Cursor Overlapping");
                     acc_cursors.push(last);
                 } else {
                     acc_cursors.push(last);
