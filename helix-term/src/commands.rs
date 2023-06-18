@@ -10,6 +10,7 @@ use tui::widgets::Row;
 pub use typed::*;
 
 use helix_core::{
+    Change,
     char_idx_at_visual_offset, comment,
     doc_formatter::TextFormat,
     encoding, find_first_non_whitespace_char, find_workspace, graphemes,
@@ -32,7 +33,6 @@ use helix_core::{
     RopeSlice, Selection, SmallVec, Tendril, Transaction,
 };
 use helix_view::{
-    apply_transaction,
     clipboard::ClipboardType,
     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
     editor::{Action, CompleteAction, Motion},
@@ -5479,6 +5479,7 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     let text = doc.text();
     let slice = text.slice(..);
     let mut last_step_changes: Vec<ExtendedChange> = vec![];
+    let mut at_doc_edge = false;
     let all_changes = selection.into_iter().map(|range| {
         let (start, end) = range.line_range(slice);
         let line_start = text.line_to_char(start);
@@ -5493,7 +5494,8 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         let rel_pos_anchor = range.anchor - line_start;
         let rel_pos_head = range.head - line_start;
 
-        if next_line == start || next_line >= text.len_lines() {
+        if next_line == start || next_line >= text.len_lines() || at_doc_edge {
+            at_doc_edge = true;
             let cursor_rel_pos = (rel_pos_anchor, rel_pos_head);
             let changes = vec![(
                 line_start,
@@ -5546,6 +5548,10 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
         mut current_changes: Vec<ExtendedChange>,
         direction: &MoveSelection,
     ) -> Vec<ExtendedChange> {
+        // let mut last_it = last_changes.into_iter();
+        // let mut current_it = current_changes.into_iter();
+
+
         let mut last = last_changes.pop().unwrap();
         let current_last = current_changes.pop().unwrap();
         let mut current_first = current_changes.pop().unwrap();
@@ -5572,12 +5578,18 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
             last_changes.extend(vec![first, last, current_first, current_last]);
             last_changes
         }
+
+        // if let (Some(mut last), Some(first), Some(current_last), Some(mut current_first)) = (last_changes.pop(), last_changes.pop(), current_it.next(), current_it.next()) {
+        // } else {
+        //     last_changes
+        // }
+
     }
 
     let mut flattened: Vec<Vec<ExtendedChange>> = all_changes.into_iter().collect();
     let last_changes = flattened.pop().unwrap_or(vec![]);
 
-    let acc_cursors = get_adjusted_selection(&doc, &last_changes, direction);
+    let acc_cursors = get_adjusted_selection(&doc, &last_changes, direction, at_doc_edge);
 
     let changes: Vec<Change> = last_changes
         .into_iter()
@@ -5590,7 +5602,7 @@ fn move_selection(cx: &mut Context, direction: MoveSelection) {
     let new_sel = Selection::new(acc_cursors.into(), 0);
     let transaction = Transaction::change(doc.text(), changes.into_iter());
 
-    apply_transaction(&transaction, doc, view);
+    doc.apply(&transaction, view.id);
     doc.set_selection(view.id, new_sel);
 }
 
@@ -5598,6 +5610,7 @@ fn get_adjusted_selection(
     doc: &Document,
     last_changes: &Vec<ExtendedChange>,
     direction: MoveSelection,
+    at_doc_edge: bool,
 ) -> Vec<Range> {
     let mut first_change_len = 0;
     let mut next_start = 0;
@@ -5608,29 +5621,36 @@ fn get_adjusted_selection(
         let change_len = change.2.as_ref().map_or(0, |x| x.len());
 
         if let Some((rel_anchor, rel_head)) = change.3 {
-            let (anchor, head) = match direction {
-                MoveSelection::Below => {
-                    let anchor = change.0 + first_change_len + rel_anchor - change_len;
-                    let head = change.0 + first_change_len + rel_head - change_len;
-                    (anchor, head)
-                }
-                MoveSelection::Above => {
-                    if next_start == 0 {
-                        next_start = change.0;
-                    }
-                    let anchor = next_start + rel_anchor;
-                    let head = next_start + rel_head;
+            let (anchor, head) = if at_doc_edge {
+                let anchor = change.0 + rel_anchor;
+                let head = change.0 + rel_head;
+                (anchor, head)
+            } else {
+                match direction {
+                    MoveSelection::Above => {
+                        if next_start == 0 {
+                            next_start = change.0;
+                        }
+                        let anchor = next_start + rel_anchor;
+                        let head = next_start + rel_head;
 
-                    // If there is next cursor below, selection position should be adjusted
-                    // according to the length of the current line.
-                    next_start += change_len + doc.line_ending.len_chars();
-                    (anchor, head)
+                        // If there is next cursor below, selection position should be adjusted
+                        // according to the length of the current line.
+                        next_start += change_len + doc.line_ending.len_chars();
+                        (anchor, head)
+                    }
+                    MoveSelection::Below => {
+                        let anchor = change.0 + first_change_len + rel_anchor - change_len;
+                        let head = change.0 + first_change_len + rel_head - change_len;
+                        (anchor, head)
+                    }
                 }
             };
 
             let cursor = Range::new(anchor, head);
             if let Some(last) = acc_cursors.pop() {
                 if cursor.overlaps(&last) {
+                    log::info!("Cursor Overlapping");
                     acc_cursors.push(last);
                 } else {
                     acc_cursors.push(last);
